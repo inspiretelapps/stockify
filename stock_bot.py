@@ -11,6 +11,7 @@ import requests
 import io
 import base64
 import json
+import pytz # Import pytz for timezone conversion
 
 # --- Load Environment Variables ---
 load_dotenv()
@@ -106,7 +107,6 @@ async def analyze_image_with_openai(image_bytes, client_name):
 
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
     
-    # Updated and more specific prompt
     prompt_text = (
         "Analyze the provided image of an electronic device. Your primary goal is to extract the Make, Model, Serial Number, Part Number, and MAC Address. "
         "Format your response as a single, clean JSON object with the keys: 'make', 'model', 'serial_number', 'part_number', 'mac_address'. "
@@ -122,7 +122,7 @@ async def analyze_image_with_openai(image_bytes, client_name):
     try:
         response = await asyncio.to_thread(
             openai.chat.completions.create,
-            model="gpt-4o", # Ensure you are using the latest vision-capable model
+            model="gpt-4o",
             messages=[
                 {
                     "role": "user",
@@ -170,7 +170,7 @@ async def analyze_image_with_openai(image_bytes, client_name):
 
     except openai.APIError as e: 
         print(f"OpenAI API Error: {e}")
-        error_message = f"OpenAI API Error: Status {e.status_code} - {e.message}" # Adjusted to access attributes correctly
+        error_message = f"OpenAI API Error: Status {e.status_code} - {e.message}"
         return {"make": error_message, "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A"}
     except Exception as e: 
         print(f"Error calling OpenAI API: {e}")
@@ -213,7 +213,19 @@ async def on_message(message):
                         return
 
                 discord_user = message.author.display_name
-                post_timestamp = message.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+                
+                # Get the UTC timestamp from Discord
+                utc_timestamp = message.created_at
+                
+                # Define the SAST timezone
+                sast_timezone = pytz.timezone('Africa/Johannesburg') # SAST timezone
+                
+                # Convert UTC to SAST
+                sast_timestamp = utc_timestamp.replace(tzinfo=pytz.utc).astimezone(sast_timezone)
+                
+                # Format it for display and Google Sheets
+                formatted_sast_timestamp = sast_timestamp.strftime("%Y-%m-%d %H:%M:%S SAST")
+                
                 image_url = attachment.url
 
                 processing_msg = await message.reply(f"⏳ Processing image for client: **{client_name}** (posted by {discord_user}). Please wait...")
@@ -233,7 +245,8 @@ async def on_message(message):
                     part_no = extracted_info.get('part_number', 'N/A')
                     mac = extracted_info.get('mac_address', 'N/A')
 
-                    sheet_row = [post_timestamp, discord_user, client_name, make, model, serial, part_no, mac, image_url]
+                    # Use the formatted SAST timestamp for the sheet_row
+                    sheet_row = [formatted_sast_timestamp, discord_user, client_name, make, model, serial, part_no, mac, image_url]
 
                     if await asyncio.to_thread(append_to_google_sheet, sheet_row):
                         summary_reply = (
@@ -245,7 +258,8 @@ async def on_message(message):
                             f"**Part No.:** `{part_no}`\n"
                             f"**MAC Address:** `{mac}`\n"
                             f"------------------------------------\n"
-                            f"Image processed and data saved."
+                            f"Image processed and data saved.\n" # Removed timestamp from here as it's in the sheet
+                            f"(Time: {sast_timestamp.strftime('%Y-%m-%d %H:%M:%S %Z%z')})" # Optionally add it to the Discord reply for clarity
                         )
                         await processing_msg.edit(content=summary_reply)
                         await message.add_reaction("✅")
