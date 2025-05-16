@@ -1,0 +1,6 @@
+# Ignore all .env files
+.env
+
+# Ignore all .json files (if you want to ignore every JSON file)
+*.json
+
