@@ -17,7 +17,6 @@ load_dotenv()
 DISCORD_BOT_TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 GOOGLE_SHEET_ID = os.getenv('GOOGLE_SHEET_ID')
-# MACLOOKUP_API_KEY is no longer needed
 
 try:
     TARGET_DISCORD_CHANNEL_ID = int(os.getenv('TARGET_DISCORD_CHANNEL_ID'))
@@ -106,17 +105,18 @@ async def analyze_image_with_openai(image_bytes, client_name):
         return None
 
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    
+    # Updated and more specific prompt
     prompt_text = (
-        "Analyze this image of an electronic device. Extract the following information if visible: "
-        "Make, Model, Serial Number, Part Number, and MAC Address. "
-        f"This device is for a client named '{client_name}'. "
-        "Return the information as a JSON object with keys: 'make', 'model', 'serial_number', 'part_number', 'mac_address'. "
-        "IMPORTANT: If the Make and Model are not directly printed on the device, examine the MAC Address and Part Number closely. "
-        "Use the Organizational Unique Identifier (OUI) from the MAC address and any available Part Number information "
-        "to infer the Make and Model of the device. "
-        "For example, a MAC address can indicate the manufacturer, and a part number can pinpoint the specific model. "
-        "If a piece of information is not found or cannot be reliably inferred even after checking MAC/Part Number, use 'N/A' as its value. "
-        "Ensure MAC Addresses are complete and correctly formatted if found."
+        "Analyze the provided image of an electronic device. Your primary goal is to extract the Make, Model, Serial Number, Part Number, and MAC Address. "
+        "Format your response as a single, clean JSON object with the keys: 'make', 'model', 'serial_number', 'part_number', 'mac_address'. "
+        f"The client associated with this device is '{client_name}'.\n\n"
+        "CRITICAL INFERENCE STEP: If the Make and Model are not clearly printed on the device, YOU MUST attempt to deduce them. "
+        "Use the Organizational Unique Identifier (OUI) from the first three octets of the MAC address to identify the manufacturer (this will be the 'Make'). "
+        "Then, use the Part Number, in conjunction with the inferred Make, to determine the specific 'Model'. "
+        "For example, if MAC is '00:0B:82:XX:XX:XX', the OUI '000B82' indicates Grandstream Networks, Inc. If the Part Number is '962-00052-20A002', this might correspond to a 'GXP2130' model for that make.\n\n"
+        "If any piece of information (Make, Model, Serial, Part Number, MAC Address) cannot be found or reliably inferred even after these steps, use the string 'N/A' as its value. "
+        "Do not add any explanatory text outside of the JSON object."
     )
 
     try:
@@ -130,13 +130,13 @@ async def analyze_image_with_openai(image_bytes, client_name):
                         {"type": "text", "text": prompt_text},
                         {
                             "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"} # Assuming JPEG, can be image/png etc.
+                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
                         }
                     ]
                 }
             ],
-            max_tokens=450, # Slightly more tokens just in case the reasoning for inference is included
-            temperature=0.1 # Low temperature for factual, deterministic output
+            max_tokens=450, 
+            temperature=0.1 
         )
         content = response.choices[0].message.content
         print(f"OpenAI Raw Response: {content}")
@@ -148,13 +148,10 @@ async def analyze_image_with_openai(image_bytes, client_name):
             if json_start != -1 and json_end != -1:
                 json_str = content[json_start:json_end]
                 data = json.loads(json_str)
-            else: # If no curly braces, assume the model might have failed to produce JSON.
+            else: 
                 print(f"Warning: Could not find JSON object in response. Content: {content}")
-                # Attempt to create a structure with N/A if parsing fails badly
                 return {"make": "N/A (OpenAI Format Issue)", "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A", "raw_response": content}
 
-
-            # Initialize with N/A to ensure all keys exist, even if OpenAI omits them
             extracted_info = {
                 "make": data.get("make", "N/A"),
                 "model": data.get("model", "N/A"),
@@ -162,23 +159,20 @@ async def analyze_image_with_openai(image_bytes, client_name):
                 "part_number": data.get("part_number", "N/A"),
                 "mac_address": data.get("mac_address", "N/A")
             }
-            # No need for the MAC lookup fallback anymore. We trust OpenAI's direct inference.
             return extracted_info
 
         except json.JSONDecodeError as e:
             print(f"Error: OpenAI did not return valid JSON. Content: {content}. Error: {e}")
-            # Try to provide what was received for debugging, but structure it as N/A for sheet
             return {"make": "N/A (JSON Error)", "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A", "raw_response": content}
-        except Exception as e: # Catch any other parsing related errors
+        except Exception as e: 
             print(f"An unexpected error occurred parsing OpenAI response: {e}")
             return {"make": "N/A (Parsing Error)", "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A", "raw_response": content}
 
-
-    except openai.APIError as e: # More specific OpenAI errors
+    except openai.APIError as e: 
         print(f"OpenAI API Error: {e}")
-        error_message = f"OpenAI API Error: {e.status_code} - {e.message}"
+        error_message = f"OpenAI API Error: Status {e.status_code} - {e.message}" # Adjusted to access attributes correctly
         return {"make": error_message, "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A"}
-    except Exception as e: # Catch-all for other issues during API call
+    except Exception as e: 
         print(f"Error calling OpenAI API: {e}")
         return {"make": f"N/A (API Call Error: {str(e)[:100]})", "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A"}
 
@@ -212,13 +206,11 @@ async def on_message(message):
 
                 client_name = message.content.strip()
                 if not client_name:
-                    # Check if the message has content even if it's just spaces after a potential command
-                    if message.clean_content.strip(): # clean_content removes pings/mentions
+                    if message.clean_content.strip(): 
                         client_name = message.clean_content.strip()
                     else:
                         await message.reply("Client name is missing. Please provide the client's name in the message text along with the image.")
                         return
-
 
                 discord_user = message.author.display_name
                 post_timestamp = message.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -234,7 +226,7 @@ async def on_message(message):
 
                 extracted_info = await analyze_image_with_openai(image_bytes, client_name)
 
-                if extracted_info: # Check if extracted_info is not None
+                if extracted_info: 
                     make = extracted_info.get('make', 'N/A')
                     model = extracted_info.get('model', 'N/A')
                     serial = extracted_info.get('serial_number', 'N/A')
@@ -258,12 +250,12 @@ async def on_message(message):
                         await processing_msg.edit(content=summary_reply)
                         await message.add_reaction("✅")
 
-                        if "raw_response" in extracted_info: # If there was a raw response due to parsing issues
+                        if "raw_response" in extracted_info: 
                              await message.channel.send(f"Debug note: There was an issue parsing OpenAI's structured response. Raw data snippet: ```{str(extracted_info['raw_response'])[:1000]}```")
                     else:
                         await processing_msg.edit(content="❌ Failed to save data to Google Sheet.")
                         await message.add_reaction("❌")
-                else: # This case handles if analyze_image_with_openai returned None (e.g. major API call failure)
+                else: 
                     await processing_msg.edit(content="❌ Could not extract information from the image using OpenAI. A critical error occurred during analysis.")
                     await message.add_reaction("❓")
 
