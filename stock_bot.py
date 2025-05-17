@@ -19,7 +19,7 @@ load_dotenv()
 DISCORD_BOT_TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 GOOGLE_SHEET_ID = os.getenv('GOOGLE_SHEET_ID')
-MACLOOKUP_API_KEY = os.getenv('MACLOOKUP_API_KEY') # Optional for maclookup.com
+MACLOOKUP_API_KEY = os.getenv('MACLOOKUP_API_KEY') 
 
 try:
     TARGET_DISCORD_CHANNEL_ID = int(os.getenv('TARGET_DISCORD_CHANNEL_ID'))
@@ -61,6 +61,34 @@ EXPECTED_HEADER = ["Timestamp", "Discord User", "Client Name", "Make", "Model", 
 
 # --- MAC Address Lookup Setup ---
 mac_lookup_client = MacLookupApiClient(api_key=MACLOOKUP_API_KEY if MACLOOKUP_API_KEY else "")
+
+# --- Helper Function for MAC Formatting ---
+def format_mac_address(mac_string):
+    """
+    Formats a MAC address string to a standard colon-separated uppercase format.
+    e.g., "44db29eac59" or "44-DB-29-EA-C5-F9" becomes "44:DB:29:EA:C5:F9".
+    Returns the original string (uppercased) if it cannot be formatted as a 12-char hex MAC.
+    """
+    if not mac_string or mac_string.lower() == "n/a":
+        return "N/A"
+
+    # Remove common delimiters and spaces, then uppercase
+    cleaned_mac = "".join(filter(str.isalnum, mac_string)).upper()
+
+    if len(cleaned_mac) == 12:
+        try:
+            # Ensure it's a valid hex string before formatting
+            int(cleaned_mac, 16) 
+            # Insert colons every two characters
+            return ":".join(cleaned_mac[i:i+2] for i in range(0, 12, 2))
+        except ValueError:
+            # Not a valid hex string after all
+            print(f"Warning: MAC address '{mac_string}' (cleaned: '{cleaned_mac}') contains non-hex characters. Returning cleaned & uppercased.")
+            return cleaned_mac # Return the cleaned, uppercased version
+    else:
+        # If not 12 characters after cleaning, it's likely not a standard MAC.
+        print(f"Warning: Cleaned MAC address '{cleaned_mac}' is not 12 characters long. Original: '{mac_string}'. Returning cleaned & uppercased.")
+        return cleaned_mac if cleaned_mac else "N/A" # Return cleaned or N/A if cleaning resulted in empty
 
 # --- Discord Bot Setup ---
 intents = discord.Intents.default()
@@ -107,19 +135,16 @@ async def download_image(url):
         return None
 
 async def get_vendor_from_mac(mac_address_str):
-    """Looks up vendor information from a MAC address using maclookup library."""
     if not mac_address_str or mac_address_str.lower() == "n/a":
         return None
     try:
+        # Ensure the MAC is in the standard format for the lookup tool if it's sensitive
+        # The format_mac_address function should already handle this for us.
         print(f"Python MAC Lookup: Looking up MAC address: {mac_address_str}")
-        # The maclookup library might handle various formats, but cleaning can help
-        # No need for .upper() or replacing delimiters typically if library is robust
         response_text = await asyncio.to_thread(mac_lookup_client.get_vendor, mac_address_str)
-        # maclookup.get_vendor directly returns the vendor string or raises an error
         print(f"Python MAC Lookup Result for {mac_address_str}: {response_text}")
         return str(response_text) if response_text else None
     except Exception as e:
-        # Common errors could be NoVendorFoundError or API errors if using a key
         print(f"Python MAC Lookup Error for {mac_address_str}: {e}")
         return None
 
@@ -144,6 +169,7 @@ async def analyze_image_with_openai(image_bytes, client_name):
         "4. If 'Make' or 'Model' cannot be reasonably determined for an item, use 'N/A'.\n\n"
         "If an image shows multiple distinct items, create a separate JSON object for each. "
         "Ensure all keys are present in each JSON object, using 'N/A' where appropriate. "
+        "Extract MAC addresses as they appear, even without delimiters (e.g., 'AABBCCDDEEFF'). The script will format them later. "
         "Do not add any explanatory text outside of the main JSON array structure."
     )
 
@@ -174,20 +200,20 @@ async def analyze_image_with_openai(image_bytes, client_name):
         try:
             array_start = content.find('[')
             array_end = content.rfind(']') + 1
-            list_of_item_data = [] # Ensure it's initialized
+            list_of_item_data = []
             
             if array_start != -1 and array_end != -1:
                 json_array_str = content[array_start:array_end]
-                parsed_json = json.loads(json_array_str) # Parse first
+                parsed_json = json.loads(json_array_str) 
 
                 if isinstance(parsed_json, list):
                     list_of_item_data = parsed_json
-                elif isinstance(parsed_json, dict): # If OpenAI returns a single object instead of array
+                elif isinstance(parsed_json, dict):
                     print("Warning: OpenAI returned a single object, expected an array. Processing as one item.")
                     list_of_item_data = [parsed_json]
                 else:
                     raise TypeError(f"Expected a list or dict from OpenAI JSON, got {type(parsed_json)}")
-            else: # Fallback if no array brackets, try to parse as single object.
+            else:
                 print(f"Warning: Could not find JSON array brackets in response. Attempting to parse as single object. Content: {content}")
                 json_start_obj = content.find('{')
                 json_end_obj = content.rfind('}') + 1
@@ -199,37 +225,33 @@ async def analyze_image_with_openai(image_bytes, client_name):
                 else:
                     raise json.JSONDecodeError("No JSON array or object found", content, 0)
 
-
             for item_data in list_of_item_data:
-                # Get all fields as extracted by OpenAI
                 item_make = item_data.get("make", "N/A")
                 item_model = item_data.get("model", "N/A")
                 serial_number = item_data.get("serial_number", "N/A")
                 part_number = item_data.get("part_number", "N/A") 
                 dp_n = item_data.get("dp_n", "N/A")            
                 vpn = item_data.get("vpn", "N/A")              
-                mac_address = item_data.get("mac_address", "N/A")
+                
+                raw_mac_address = item_data.get("mac_address", "N/A")
+                mac_address = format_mac_address(raw_mac_address) # Apply formatting
 
                 final_make = item_make
                 final_model = item_model
 
-                # Python-level refinement/fallback
-                # Step 1: If Make is N/A (or uninformative) from OpenAI AND MAC is available, use Python MAC lookup
                 if (final_make == "N/A" or not final_make or final_make.lower() == "unknown") and \
                    (mac_address != "N/A" and mac_address):
-                    print(f"Item S/N: {serial_number} - OpenAI Make is '{final_make}'. MAC address '{mac_address}' found. Attempting Python MAC lookup.")
+                    print(f"Item S/N: {serial_number} - OpenAI Make is '{final_make}'. Formatted MAC address '{mac_address}' found. Attempting Python MAC lookup.")
                     vendor_from_mac = await get_vendor_from_mac(mac_address)
                     if vendor_from_mac:
                         final_make = vendor_from_mac
                         print(f"Item S/N: {serial_number} - Python MAC lookup updated Make to: '{final_make}'")
                 
-                # Step 2: If Make is (now) Dell (either from OpenAI or DP/N fallback) and model is still N/A
                 if (final_make == "N/A" or not final_make or final_make.lower() == "unknown") and \
-                   (dp_n != "N/A" and dp_n): # Check DP/N if Make still not found
+                   (dp_n != "N/A" and dp_n):
                     final_make = "Dell"
                     print(f"Item S/N: {serial_number} - Python fallback inferred Make 'Dell' from DP/N: {dp_n}")
                 
-                # Step 3: Model inference using VPN or DP/N (if Dell)
                 if (final_model == "N/A" or not final_model or final_model.lower() == "unknown"):
                     if vpn != "N/A" and vpn:
                         final_model = vpn 
@@ -243,11 +265,11 @@ async def analyze_image_with_openai(image_bytes, client_name):
                     "model": final_model if final_model and final_model.lower() != "n/a" and final_model.lower() != "unknown" else "N/A",
                     "serial_number": serial_number,
                     "part_number": part_number,
-                    "mac_address": mac_address
+                    "mac_address": mac_address 
                 }
                 processed_items_list.append(item_info)
             
-            if not processed_items_list and content: # Should not happen if parsing logic above is sound
+            if not processed_items_list and content:
                  return [{"make": "N/A (Processing Issue)", "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A", "raw_response": content[:500]}]
 
             return processed_items_list
@@ -266,7 +288,6 @@ async def analyze_image_with_openai(image_bytes, client_name):
     except Exception as e: 
         print(f"Error calling OpenAI API: {e}")
         return [{"make": f"N/A (API Call Error: {str(e)[:100]})", "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A"}]
-
 
 def append_to_google_sheet(data_row):
     try:
@@ -337,7 +358,7 @@ async def on_message(message):
                         model = item_info.get('model', 'N/A')
                         serial = item_info.get('serial_number', 'N/A')
                         part_no = item_info.get('part_number', 'N/A')
-                        mac = item_info.get('mac_address', 'N/A')
+                        mac = item_info.get('mac_address', 'N/A') # This will be the formatted MAC
                         
                         sheet_row = [formatted_sast_timestamp, discord_user, client_name, make, model, serial, part_no, mac, image_url]
 
@@ -349,7 +370,7 @@ async def on_message(message):
                                 f"**Model:** `{model}`\n"
                                 f"**Serial:** `{serial}`\n"
                                 f"**Part No.:** `{part_no}`\n"
-                                f"**MAC Address:** `{mac}`"
+                                f"**MAC Address:** `{mac}`" # Display formatted MAC
                             )
                         else:
                             summary_parts.append(
@@ -363,7 +384,7 @@ async def on_message(message):
                     else:
                         if any("Item Processing Issue" in part for part in summary_parts) or any("Failed to save item" in part for part in summary_parts):
                              summary_parts.append(f"------------------------------------\nNo items successfully saved. Please check issues above.")
-                        else: # This means list_of_extracted_items was empty or only contained errors from OpenAI's initial API call itself
+                        else:
                             summary_parts.append(f"------------------------------------\nNo valid item data extracted or saved from image.")
                         await message.add_reaction("❌")
                     
@@ -374,7 +395,7 @@ async def on_message(message):
                         full_summary_message = full_summary_message[:1990] + "\n... (message truncated)"
                     await processing_msg.edit(content=full_summary_message)
 
-                else: # list_of_extracted_items is None or empty from the start
+                else:
                     await processing_msg.edit(content="❌ Could not extract any information from the image using OpenAI. A critical error likely occurred before or during analysis.")
                     await message.add_reaction("❓")
 
