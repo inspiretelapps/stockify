@@ -12,7 +12,6 @@ import io
 import base64
 import json
 import pytz
-# from maclookup import ApiClient as MacLookupApiClient # We are using macvendors.com directly
 
 # --- Load Environment Variables ---
 load_dotenv()
@@ -61,19 +60,12 @@ EXPECTED_HEADER = ["Timestamp", "Discord User", "Client Name", "Make", "Model", 
 
 # --- Helper Function for MAC Formatting ---
 def format_mac_address(mac_string):
-    """
-    Formats a MAC address string to a standard colon-separated uppercase format.
-    e.g., "44db29eac59" or "44-DB-29-EA-C5-F9" becomes "44:DB:29:EA:C5:F9".
-    Returns "N/A" if it cannot be formatted as a 12-char hex MAC.
-    """
     if not mac_string or mac_string.lower() == "n/a":
         return "N/A"
-
     cleaned_mac = "".join(filter(str.isalnum, mac_string)).upper()
-
     if len(cleaned_mac) == 12:
         try:
-            int(cleaned_mac, 16)  # Check if it's a valid hex string
+            int(cleaned_mac, 16) 
             return ":".join(cleaned_mac[i:i+2] for i in range(0, 12, 2))
         except ValueError:
             print(f"Warning: MAC address '{mac_string}' (cleaned: '{cleaned_mac}') contains non-hex characters after cleaning. Returning N/A.")
@@ -82,9 +74,9 @@ def format_mac_address(mac_string):
         print(f"Warning: Cleaned MAC address '{cleaned_mac}' is not 12 characters long. Original: '{mac_string}'. Returning N/A.")
         return "N/A"
 
-# --- get_vendor_from_mac for macvendors.com ---
+# --- get_vendor_from_mac for macvendors.com (UPDATED) ---
 async def get_vendor_from_mac(mac_address_str):
-    if not mac_address_str or mac_address_str.lower() == "n/a": # Should be caught by format_mac_address already
+    if not mac_address_str or mac_address_str.lower() == "n/a": # Should be N/A if format_mac_address failed
         return None
     if not MACVENDORS_API_TOKEN:
         print("Error: MACVENDORS_API_TOKEN not found in environment variables. Cannot perform MAC lookup.")
@@ -92,7 +84,8 @@ async def get_vendor_from_mac(mac_address_str):
     
     url = f"https://api.macvendors.com/v1/lookup/{mac_address_str}"
     headers = {
-        "Authorization": f"Bearer {MACVENDORS_API_TOKEN}"
+        "Authorization": f"Bearer {MACVENDORS_API_TOKEN}",
+        "Accept": "application/json" # Explicitly request JSON
     }
 
     try:
@@ -100,13 +93,44 @@ async def get_vendor_from_mac(mac_address_str):
         response = await asyncio.to_thread(requests.get, url, headers=headers, timeout=10)
         
         if response.status_code == 200:
-            vendor_name = response.text.strip()
-            if vendor_name and "not found" not in vendor_name.lower() and "errors" not in vendor_name.lower():
-                print(f"Python MAC Lookup Result (macvendors.com) for {mac_address_str}: {vendor_name}")
-                return vendor_name
-            else:
-                print(f"Python MAC Lookup (macvendors.com) for {mac_address_str}: No vendor found by API or error text: '{vendor_name}'")
+            try:
+                data = response.json() 
+                if isinstance(data, dict) and "data" in data and isinstance(data["data"], dict) and "organization_name" in data["data"]:
+                    vendor_name = data["data"]["organization_name"]
+                    
+                    vendor_name_cleaned = vendor_name.split(" CO.")[0].split(" LTD")[0].split(" INC")[0].split(" LLC")[0].split(" GMBH")[0].strip()
+                    
+                    if "YEALINK" in vendor_name_cleaned.upper():
+                        vendor_name_cleaned = "Yealink"
+                    # Add more elif conditions here for other common long names if needed
+                    # elif "HEWLETT PACKARD" in vendor_name_cleaned.upper():
+                    #     vendor_name_cleaned = "HP"
+                    # elif "CISCO SYSTEMS" in vendor_name_cleaned.upper():
+                    #     vendor_name_cleaned = "Cisco"
+                    
+                    print(f"Python MAC Lookup Result (macvendors.com) for {mac_address_str}: Original='{vendor_name}', Cleaned='{vendor_name_cleaned}'")
+                    return vendor_name_cleaned
+                elif isinstance(data, str): 
+                    if "not found" not in data.lower() and "errors" not in data.lower():
+                         print(f"Python MAC Lookup Result (macvendors.com) for {mac_address_str} (plain text): {data}")
+                         return data 
+                    else:
+                         print(f"Python MAC Lookup (macvendors.com) for {mac_address_str}: No vendor found by API (plain text error): '{data}'")
+                         return None
+                else: # JSON structure is not what we expect
+                    print(f"Python MAC Lookup (macvendors.com) for {mac_address_str}: JSON response did not contain expected 'data.organization_name'. Response: {data}")
+                    return None # Or return a generic part of the data if appropriate
+            except json.JSONDecodeError: # If response is 200 but not JSON (e.g. "Not Found" plain text)
+                error_text = response.text.strip()
+                if "not found" in error_text.lower(): # API sometimes returns "Not Found" as plain text for 200
+                    print(f"Python MAC Lookup (macvendors.com) for {mac_address_str}: No vendor found by API (plain text 'Not Found').")
+                else: # Other unexpected plain text for 200
+                    print(f"Python MAC Lookup (macvendors.com) for {mac_address_str}: Response was not valid JSON despite status 200. Text: {error_text[:200]}")
                 return None
+            except Exception as e_parse: # Catch other potential parsing errors
+                print(f"Python MAC Lookup (macvendors.com) - Error parsing response for {mac_address_str}: {e_parse}, Response: {response.text[:200]}")
+                return None
+
         elif response.status_code == 401:
             print(f"Python MAC Lookup Error (macvendors.com) for {mac_address_str}: 401 Unauthorized. Check your MACVENDORS_API_TOKEN.")
             return None
@@ -126,7 +150,8 @@ async def get_vendor_from_mac(mac_address_str):
         print(f"An unexpected error occurred in get_vendor_from_mac for {mac_address_str}: {e_outer}")
         return None
 
-async def set_sheet_header_if_needed(): # Definition was correctly placed in previous full script
+# --- Function to set sheet header ---
+async def set_sheet_header_if_needed():
     try:
         end_column_letter = chr(64 + len(EXPECTED_HEADER)) 
         range_to_check = f"{SHEET_NAME}!A1:{end_column_letter}1"
@@ -186,7 +211,7 @@ async def analyze_image_with_openai(image_bytes, client_name):
         "Analyze the provided image which may contain one or more electronic devices or their labels (e.g., on boxes). "
         "Your goal is to identify each distinct item/device shown. For EACH item, extract the following information: "
         "Make, Model, Serial Number (S/N), a generic Part Number (P/N) if available, a Dell Part Number (DP/N) if available, "
-        "a Vendor Product Number (VPN) if available, and the MAC Address. MAC addresses consist of 12 hexadecimal characters; please ensure complete extraction. " # Added nudge
+        "a Vendor Product Number (VPN) if available, and the MAC Address. MAC addresses consist of 12 hexadecimal characters; please ensure complete extraction. "
         f"The client associated with these items is '{client_name}'.\n\n"
         "Format your response as a single JSON ARRAY, where each element in the array is a JSON object representing one detected item. "
         "Each JSON object should have the keys: 'make', 'model', 'serial_number', 'part_number', 'dp_n', 'vpn', 'mac_address'.\n\n"
@@ -262,13 +287,13 @@ async def analyze_image_with_openai(image_bytes, client_name):
                 vpn = item_data.get("vpn", "N/A")              
                 
                 raw_mac_address = item_data.get("mac_address", "N/A")
-                mac_address = format_mac_address(raw_mac_address) # Apply formatting
+                mac_address = format_mac_address(raw_mac_address)
 
                 final_make = item_make
                 final_model = item_model
 
                 if (final_make == "N/A" or not final_make or final_make.lower() == "unknown") and \
-                   (mac_address != "N/A"): # Check if formatted MAC is valid before lookup
+                   (mac_address != "N/A"): 
                     print(f"Item S/N: {serial_number} - OpenAI Make is '{final_make}'. Formatted MAC address '{mac_address}' found. Attempting Python MAC lookup.")
                     vendor_from_mac = await get_vendor_from_mac(mac_address)
                     if vendor_from_mac:
@@ -431,6 +456,8 @@ async def on_message(message):
 if __name__ == "__main__":
     if not all([DISCORD_BOT_TOKEN, OPENAI_API_KEY, GOOGLE_SHEET_ID, str(TARGET_DISCORD_CHANNEL_ID).isdigit()]):
         print("Critical environment variables missing or invalid. Check .env file.")
+    elif not MACVENDORS_API_TOKEN: # Add check for the new API token
+        print("Error: MACVENDORS_API_TOKEN not found in .env file. This is required for MAC address lookup.")
     elif not os.path.exists(SERVICE_ACCOUNT_FILE):
         print(f"Google credentials file '{SERVICE_ACCOUNT_FILE}' missing.")
     else:
