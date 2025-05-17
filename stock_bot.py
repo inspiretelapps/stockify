@@ -7,19 +7,18 @@ import openai
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import datetime
-import requests # Make sure this is imported
+import requests 
 import io
 import base64
 import json
 import pytz
-# from maclookup import ApiClient as MacLookupApiClient # Remove this or comment out
 
 # --- Load Environment Variables ---
 load_dotenv()
 DISCORD_BOT_TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 GOOGLE_SHEET_ID = os.getenv('GOOGLE_SHEET_ID')
-MACVENDORS_API_TOKEN = os.getenv('MACVENDORS_API_TOKEN') # ADD THIS LINE
+MACVENDORS_API_TOKEN = os.getenv('MACVENDORS_API_TOKEN') 
 
 try:
     TARGET_DISCORD_CHANNEL_ID = int(os.getenv('TARGET_DISCORD_CHANNEL_ID'))
@@ -28,7 +27,6 @@ except (ValueError, TypeError):
     exit()
 
 # --- OpenAI Setup ---
-# ... (rest of OpenAI setup is the same) ...
 if OPENAI_API_KEY:
     openai.api_key = OPENAI_API_KEY
 else:
@@ -36,7 +34,6 @@ else:
     exit()
 
 # --- Google Sheets Setup ---
-# ... (rest of Google Sheets setup is the same) ...
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 SERVICE_ACCOUNT_FILE = 'credentials.json'
 
@@ -61,10 +58,6 @@ except Exception as e:
 SHEET_NAME = 'Sheet1'
 EXPECTED_HEADER = ["Timestamp", "Discord User", "Client Name", "Make", "Model", "Serial Number", "Part Number", "MAC Address", "Image URL"]
 
-
-# --- MAC Address Lookup Setup (Now using macvendors.com directly) ---
-# mac_lookup_client = MacLookupApiClient(api_key=MACLOOKUP_API_KEY if MACLOOKUP_API_KEY else "") # Remove or comment out
-
 # --- Helper Function for MAC Formatting ---
 def format_mac_address(mac_string):
     if not mac_string or mac_string.lower() == "n/a":
@@ -81,7 +74,7 @@ def format_mac_address(mac_string):
         print(f"Warning: Cleaned MAC address '{cleaned_mac}' is not 12 characters long. Original: '{mac_string}'. Returning cleaned & uppercased.")
         return cleaned_mac if cleaned_mac else "N/A"
 
-# --- NEW get_vendor_from_mac for macvendors.com ---
+# --- get_vendor_from_mac for macvendors.com ---
 async def get_vendor_from_mac(mac_address_str):
     if not mac_address_str or mac_address_str.lower() == "n/a":
         return None
@@ -100,8 +93,7 @@ async def get_vendor_from_mac(mac_address_str):
         
         if response.status_code == 200:
             vendor_name = response.text.strip()
-            # The API returns "Not Found" as plain text for a 200 response if MAC OUI is not in their DB
-            if vendor_name and "not found" not in vendor_name.lower() and "errors" not in vendor_name.lower(): # Check for "Not Found" too
+            if vendor_name and "not found" not in vendor_name.lower() and "errors" not in vendor_name.lower():
                 print(f"Python MAC Lookup Result (macvendors.com) for {mac_address_str}: {vendor_name}")
                 return vendor_name
             else:
@@ -110,7 +102,7 @@ async def get_vendor_from_mac(mac_address_str):
         elif response.status_code == 401:
             print(f"Python MAC Lookup Error (macvendors.com) for {mac_address_str}: 401 Unauthorized. Check your MACVENDORS_API_TOKEN.")
             return None
-        elif response.status_code == 404: # This might indicate an invalid MAC format for the API, or truly not found.
+        elif response.status_code == 404: 
             print(f"Python MAC Lookup (macvendors.com) for {mac_address_str}: Resource not found (404). MAC might be invalid or not in DB.")
             return None
         else:
@@ -126,8 +118,35 @@ async def get_vendor_from_mac(mac_address_str):
         print(f"An unexpected error occurred in get_vendor_from_mac for {mac_address_str}: {e_outer}")
         return None
 
+# --- Function to set sheet header --- ADDED BACK ---
+async def set_sheet_header_if_needed():
+    try:
+        end_column_letter = chr(64 + len(EXPECTED_HEADER)) 
+        range_to_check = f"{SHEET_NAME}!A1:{end_column_letter}1"
+        
+        result = google_sheets_service.spreadsheets().values().get(
+            spreadsheetId=GOOGLE_SHEET_ID,
+            range=range_to_check
+        ).execute()
+        values = result.get('values', [])
+        
+        if not values or values[0] != EXPECTED_HEADER:
+            print("Setting/Updating Google Sheet header row...")
+            body = {'values': [EXPECTED_HEADER]}
+            google_sheets_service.spreadsheets().values().update(
+                spreadsheetId=GOOGLE_SHEET_ID,
+                range=f"{SHEET_NAME}!A1", 
+                valueInputOption='USER_ENTERED',
+                body=body
+            ).execute()
+            print(f"Header row set to: {EXPECTED_HEADER}")
+        else:
+            print("Google Sheet header row is already correct.")
+            
+    except Exception as e:
+        print(f"Error setting/checking Google Sheet header: {e}")
+
 # --- Discord Bot Setup ---
-# ... (Discord bot setup is the same) ...
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
@@ -135,17 +154,20 @@ intents.guilds = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- analyze_image_with_openai and on_message ---
-# (These functions remain largely the same as the previous version,
-#  they will now correctly call the updated get_vendor_from_mac)
-
 @bot.event
 async def on_ready():
     print(f'{bot.user.name} has connected to Discord!')
     print(f"Monitoring channel ID: {TARGET_DISCORD_CHANNEL_ID}")
-    await set_sheet_header_if_needed()
+    await set_sheet_header_if_needed() # This call should now work
 
-# ... (set_sheet_header_if_needed, download_image remain the same)
+async def download_image(url): # Moved download_image to be defined before analyze_image_with_openai
+    try:
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        return response.content
+    except requests.exceptions.RequestException as e:
+        print(f"Error downloading image from {url}: {e}")
+        return None
 
 async def analyze_image_with_openai(image_bytes, client_name):
     if not image_bytes:
@@ -288,11 +310,21 @@ async def analyze_image_with_openai(image_bytes, client_name):
         print(f"Error calling OpenAI API: {e}")
         return [{"make": f"N/A (API Call Error: {str(e)[:100]})", "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A"}]
 
-# ... (append_to_google_sheet and on_message remain the same)
-# ... (Make sure the on_message function correctly calls analyze_image_with_openai)
-# ... (and the final __main__ block also remains the same)
+def append_to_google_sheet(data_row):
+    try:
+        body = {'values': [data_row]}
+        result = google_sheets_service.spreadsheets().values().append(
+            spreadsheetId=GOOGLE_SHEET_ID,
+            range=f"{SHEET_NAME}!A1",
+            valueInputOption='USER_ENTERED',
+            insertDataOption='INSERT_ROWS',
+            body=body
+        ).execute()
+        return True
+    except Exception as e:
+        print(f"Error appending to Google Sheet: {e}")
+        return False
 
-# --- Discord Bot Event Handler for Messages ---
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
@@ -321,7 +353,7 @@ async def on_message(message):
 
                 processing_msg = await message.reply(f"⏳ Processing image for client: **{client_name}** (posted by {discord_user}). This may take a moment for multiple items...")
 
-                image_bytes = await download_image(image_url)
+                image_bytes = await download_image(image_url) # download_image is now defined
                 if not image_bytes:
                     await processing_msg.edit(content="❌ Failed to download the image. Please try again.")
                     await message.add_reaction("⚠️")
@@ -347,7 +379,7 @@ async def on_message(message):
                         model = item_info.get('model', 'N/A')
                         serial = item_info.get('serial_number', 'N/A')
                         part_no = item_info.get('part_number', 'N/A')
-                        mac = item_info.get('mac_address', 'N/A')
+                        mac = item_info.get('mac_address', 'N/A') 
                         
                         sheet_row = [formatted_sast_timestamp, discord_user, client_name, make, model, serial, part_no, mac, image_url]
 
@@ -384,7 +416,7 @@ async def on_message(message):
                         full_summary_message = full_summary_message[:1990] + "\n... (message truncated)"
                     await processing_msg.edit(content=full_summary_message)
 
-                else:
+                else: 
                     await processing_msg.edit(content="❌ Could not extract any information from the image using OpenAI. A critical error likely occurred before or during analysis.")
                     await message.add_reaction("❓")
 
