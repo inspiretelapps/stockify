@@ -12,6 +12,7 @@ import io
 import base64
 import json
 import pytz
+# from maclookup import ApiClient as MacLookupApiClient # We are using macvendors.com directly
 
 # --- Load Environment Variables ---
 load_dotenv()
@@ -60,23 +61,30 @@ EXPECTED_HEADER = ["Timestamp", "Discord User", "Client Name", "Make", "Model", 
 
 # --- Helper Function for MAC Formatting ---
 def format_mac_address(mac_string):
+    """
+    Formats a MAC address string to a standard colon-separated uppercase format.
+    e.g., "44db29eac59" or "44-DB-29-EA-C5-F9" becomes "44:DB:29:EA:C5:F9".
+    Returns "N/A" if it cannot be formatted as a 12-char hex MAC.
+    """
     if not mac_string or mac_string.lower() == "n/a":
         return "N/A"
+
     cleaned_mac = "".join(filter(str.isalnum, mac_string)).upper()
+
     if len(cleaned_mac) == 12:
         try:
-            int(cleaned_mac, 16) 
+            int(cleaned_mac, 16)  # Check if it's a valid hex string
             return ":".join(cleaned_mac[i:i+2] for i in range(0, 12, 2))
         except ValueError:
-            print(f"Warning: MAC address '{mac_string}' (cleaned: '{cleaned_mac}') contains non-hex characters. Returning cleaned & uppercased.")
-            return cleaned_mac 
+            print(f"Warning: MAC address '{mac_string}' (cleaned: '{cleaned_mac}') contains non-hex characters after cleaning. Returning N/A.")
+            return "N/A" 
     else:
-        print(f"Warning: Cleaned MAC address '{cleaned_mac}' is not 12 characters long. Original: '{mac_string}'. Returning cleaned & uppercased.")
-        return cleaned_mac if cleaned_mac else "N/A"
+        print(f"Warning: Cleaned MAC address '{cleaned_mac}' is not 12 characters long. Original: '{mac_string}'. Returning N/A.")
+        return "N/A"
 
 # --- get_vendor_from_mac for macvendors.com ---
 async def get_vendor_from_mac(mac_address_str):
-    if not mac_address_str or mac_address_str.lower() == "n/a":
+    if not mac_address_str or mac_address_str.lower() == "n/a": # Should be caught by format_mac_address already
         return None
     if not MACVENDORS_API_TOKEN:
         print("Error: MACVENDORS_API_TOKEN not found in environment variables. Cannot perform MAC lookup.")
@@ -118,8 +126,7 @@ async def get_vendor_from_mac(mac_address_str):
         print(f"An unexpected error occurred in get_vendor_from_mac for {mac_address_str}: {e_outer}")
         return None
 
-# --- Function to set sheet header --- ADDED BACK ---
-async def set_sheet_header_if_needed():
+async def set_sheet_header_if_needed(): # Definition was correctly placed in previous full script
     try:
         end_column_letter = chr(64 + len(EXPECTED_HEADER)) 
         range_to_check = f"{SHEET_NAME}!A1:{end_column_letter}1"
@@ -158,9 +165,9 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 async def on_ready():
     print(f'{bot.user.name} has connected to Discord!')
     print(f"Monitoring channel ID: {TARGET_DISCORD_CHANNEL_ID}")
-    await set_sheet_header_if_needed() # This call should now work
+    await set_sheet_header_if_needed()
 
-async def download_image(url): # Moved download_image to be defined before analyze_image_with_openai
+async def download_image(url):
     try:
         response = requests.get(url, timeout=15)
         response.raise_for_status()
@@ -179,7 +186,7 @@ async def analyze_image_with_openai(image_bytes, client_name):
         "Analyze the provided image which may contain one or more electronic devices or their labels (e.g., on boxes). "
         "Your goal is to identify each distinct item/device shown. For EACH item, extract the following information: "
         "Make, Model, Serial Number (S/N), a generic Part Number (P/N) if available, a Dell Part Number (DP/N) if available, "
-        "a Vendor Product Number (VPN) if available, and the MAC Address. "
+        "a Vendor Product Number (VPN) if available, and the MAC Address. MAC addresses consist of 12 hexadecimal characters; please ensure complete extraction. " # Added nudge
         f"The client associated with these items is '{client_name}'.\n\n"
         "Format your response as a single JSON ARRAY, where each element in the array is a JSON object representing one detected item. "
         "Each JSON object should have the keys: 'make', 'model', 'serial_number', 'part_number', 'dp_n', 'vpn', 'mac_address'.\n\n"
@@ -255,13 +262,13 @@ async def analyze_image_with_openai(image_bytes, client_name):
                 vpn = item_data.get("vpn", "N/A")              
                 
                 raw_mac_address = item_data.get("mac_address", "N/A")
-                mac_address = format_mac_address(raw_mac_address)
+                mac_address = format_mac_address(raw_mac_address) # Apply formatting
 
                 final_make = item_make
                 final_model = item_model
 
                 if (final_make == "N/A" or not final_make or final_make.lower() == "unknown") and \
-                   (mac_address != "N/A" and mac_address):
+                   (mac_address != "N/A"): # Check if formatted MAC is valid before lookup
                     print(f"Item S/N: {serial_number} - OpenAI Make is '{final_make}'. Formatted MAC address '{mac_address}' found. Attempting Python MAC lookup.")
                     vendor_from_mac = await get_vendor_from_mac(mac_address)
                     if vendor_from_mac:
@@ -353,7 +360,7 @@ async def on_message(message):
 
                 processing_msg = await message.reply(f"⏳ Processing image for client: **{client_name}** (posted by {discord_user}). This may take a moment for multiple items...")
 
-                image_bytes = await download_image(image_url) # download_image is now defined
+                image_bytes = await download_image(image_url)
                 if not image_bytes:
                     await processing_msg.edit(content="❌ Failed to download the image. Please try again.")
                     await message.add_reaction("⚠️")
