@@ -7,19 +7,19 @@ import openai
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import datetime
-import requests
+import requests # Make sure this is imported
 import io
 import base64
 import json
 import pytz
-from maclookup import ApiClient as MacLookupApiClient # For MAC address vendor lookup
+# from maclookup import ApiClient as MacLookupApiClient # Remove this or comment out
 
 # --- Load Environment Variables ---
 load_dotenv()
 DISCORD_BOT_TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 GOOGLE_SHEET_ID = os.getenv('GOOGLE_SHEET_ID')
-MACLOOKUP_API_KEY = os.getenv('MACLOOKUP_API_KEY') 
+MACVENDORS_API_TOKEN = os.getenv('MACVENDORS_API_TOKEN') # ADD THIS LINE
 
 try:
     TARGET_DISCORD_CHANNEL_ID = int(os.getenv('TARGET_DISCORD_CHANNEL_ID'))
@@ -28,6 +28,7 @@ except (ValueError, TypeError):
     exit()
 
 # --- OpenAI Setup ---
+# ... (rest of OpenAI setup is the same) ...
 if OPENAI_API_KEY:
     openai.api_key = OPENAI_API_KEY
 else:
@@ -35,6 +36,7 @@ else:
     exit()
 
 # --- Google Sheets Setup ---
+# ... (rest of Google Sheets setup is the same) ...
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 SERVICE_ACCOUNT_FILE = 'credentials.json'
 
@@ -59,38 +61,73 @@ except Exception as e:
 SHEET_NAME = 'Sheet1'
 EXPECTED_HEADER = ["Timestamp", "Discord User", "Client Name", "Make", "Model", "Serial Number", "Part Number", "MAC Address", "Image URL"]
 
-# --- MAC Address Lookup Setup ---
-mac_lookup_client = MacLookupApiClient(api_key=MACLOOKUP_API_KEY if MACLOOKUP_API_KEY else "")
+
+# --- MAC Address Lookup Setup (Now using macvendors.com directly) ---
+# mac_lookup_client = MacLookupApiClient(api_key=MACLOOKUP_API_KEY if MACLOOKUP_API_KEY else "") # Remove or comment out
 
 # --- Helper Function for MAC Formatting ---
 def format_mac_address(mac_string):
-    """
-    Formats a MAC address string to a standard colon-separated uppercase format.
-    e.g., "44db29eac59" or "44-DB-29-EA-C5-F9" becomes "44:DB:29:EA:C5:F9".
-    Returns the original string (uppercased) if it cannot be formatted as a 12-char hex MAC.
-    """
     if not mac_string or mac_string.lower() == "n/a":
         return "N/A"
-
-    # Remove common delimiters and spaces, then uppercase
     cleaned_mac = "".join(filter(str.isalnum, mac_string)).upper()
-
     if len(cleaned_mac) == 12:
         try:
-            # Ensure it's a valid hex string before formatting
             int(cleaned_mac, 16) 
-            # Insert colons every two characters
             return ":".join(cleaned_mac[i:i+2] for i in range(0, 12, 2))
         except ValueError:
-            # Not a valid hex string after all
             print(f"Warning: MAC address '{mac_string}' (cleaned: '{cleaned_mac}') contains non-hex characters. Returning cleaned & uppercased.")
-            return cleaned_mac # Return the cleaned, uppercased version
+            return cleaned_mac 
     else:
-        # If not 12 characters after cleaning, it's likely not a standard MAC.
         print(f"Warning: Cleaned MAC address '{cleaned_mac}' is not 12 characters long. Original: '{mac_string}'. Returning cleaned & uppercased.")
-        return cleaned_mac if cleaned_mac else "N/A" # Return cleaned or N/A if cleaning resulted in empty
+        return cleaned_mac if cleaned_mac else "N/A"
+
+# --- NEW get_vendor_from_mac for macvendors.com ---
+async def get_vendor_from_mac(mac_address_str):
+    if not mac_address_str or mac_address_str.lower() == "n/a":
+        return None
+    if not MACVENDORS_API_TOKEN:
+        print("Error: MACVENDORS_API_TOKEN not found in environment variables. Cannot perform MAC lookup.")
+        return None
+    
+    url = f"https://api.macvendors.com/v1/lookup/{mac_address_str}"
+    headers = {
+        "Authorization": f"Bearer {MACVENDORS_API_TOKEN}"
+    }
+
+    try:
+        print(f"Python MAC Lookup (macvendors.com): Looking up MAC address: {mac_address_str}")
+        response = await asyncio.to_thread(requests.get, url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            vendor_name = response.text.strip()
+            # The API returns "Not Found" as plain text for a 200 response if MAC OUI is not in their DB
+            if vendor_name and "not found" not in vendor_name.lower() and "errors" not in vendor_name.lower(): # Check for "Not Found" too
+                print(f"Python MAC Lookup Result (macvendors.com) for {mac_address_str}: {vendor_name}")
+                return vendor_name
+            else:
+                print(f"Python MAC Lookup (macvendors.com) for {mac_address_str}: No vendor found by API or error text: '{vendor_name}'")
+                return None
+        elif response.status_code == 401:
+            print(f"Python MAC Lookup Error (macvendors.com) for {mac_address_str}: 401 Unauthorized. Check your MACVENDORS_API_TOKEN.")
+            return None
+        elif response.status_code == 404: # This might indicate an invalid MAC format for the API, or truly not found.
+            print(f"Python MAC Lookup (macvendors.com) for {mac_address_str}: Resource not found (404). MAC might be invalid or not in DB.")
+            return None
+        else:
+            print(f"Python MAC Lookup Error (macvendors.com) for {mac_address_str}: Status {response.status_code}, Response: {response.text[:200]}")
+            return None
+    except requests.exceptions.Timeout:
+        print(f"Python MAC Lookup Error (macvendors.com) for {mac_address_str}: Request timed out.")
+        return None
+    except requests.exceptions.RequestException as e:
+        print(f"Python MAC Lookup Error (macvendors.com) for {mac_address_str}: {e}")
+        return None
+    except Exception as e_outer:
+        print(f"An unexpected error occurred in get_vendor_from_mac for {mac_address_str}: {e_outer}")
+        return None
 
 # --- Discord Bot Setup ---
+# ... (Discord bot setup is the same) ...
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
@@ -98,55 +135,17 @@ intents.guilds = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
+# --- analyze_image_with_openai and on_message ---
+# (These functions remain largely the same as the previous version,
+#  they will now correctly call the updated get_vendor_from_mac)
+
 @bot.event
 async def on_ready():
     print(f'{bot.user.name} has connected to Discord!')
     print(f"Monitoring channel ID: {TARGET_DISCORD_CHANNEL_ID}")
     await set_sheet_header_if_needed()
 
-async def set_sheet_header_if_needed():
-    try:
-        range_to_check = f"{SHEET_NAME}!A1:{chr(64+len(EXPECTED_HEADER))}1"
-        result = google_sheets_service.spreadsheets().values().get(
-            spreadsheetId=GOOGLE_SHEET_ID,
-            range=range_to_check
-        ).execute()
-        values = result.get('values', [])
-        if not values or values[0] != EXPECTED_HEADER:
-            print("Setting/Updating Google Sheet header row...")
-            body = {'values': [EXPECTED_HEADER]}
-            google_sheets_service.spreadsheets().values().update(
-                spreadsheetId=GOOGLE_SHEET_ID,
-                range=f"{SHEET_NAME}!A1",
-                valueInputOption='USER_ENTERED',
-                body=body
-            ).execute()
-            print(f"Header row set to: {EXPECTED_HEADER}")
-    except Exception as e:
-        print(f"Error setting/checking Google Sheet header: {e}")
-
-async def download_image(url):
-    try:
-        response = requests.get(url, timeout=15)
-        response.raise_for_status()
-        return response.content
-    except requests.exceptions.RequestException as e:
-        print(f"Error downloading image from {url}: {e}")
-        return None
-
-async def get_vendor_from_mac(mac_address_str):
-    if not mac_address_str or mac_address_str.lower() == "n/a":
-        return None
-    try:
-        # Ensure the MAC is in the standard format for the lookup tool if it's sensitive
-        # The format_mac_address function should already handle this for us.
-        print(f"Python MAC Lookup: Looking up MAC address: {mac_address_str}")
-        response_text = await asyncio.to_thread(mac_lookup_client.get_vendor, mac_address_str)
-        print(f"Python MAC Lookup Result for {mac_address_str}: {response_text}")
-        return str(response_text) if response_text else None
-    except Exception as e:
-        print(f"Python MAC Lookup Error for {mac_address_str}: {e}")
-        return None
+# ... (set_sheet_header_if_needed, download_image remain the same)
 
 async def analyze_image_with_openai(image_bytes, client_name):
     if not image_bytes:
@@ -234,7 +233,7 @@ async def analyze_image_with_openai(image_bytes, client_name):
                 vpn = item_data.get("vpn", "N/A")              
                 
                 raw_mac_address = item_data.get("mac_address", "N/A")
-                mac_address = format_mac_address(raw_mac_address) # Apply formatting
+                mac_address = format_mac_address(raw_mac_address)
 
                 final_make = item_make
                 final_model = item_model
@@ -289,21 +288,11 @@ async def analyze_image_with_openai(image_bytes, client_name):
         print(f"Error calling OpenAI API: {e}")
         return [{"make": f"N/A (API Call Error: {str(e)[:100]})", "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A"}]
 
-def append_to_google_sheet(data_row):
-    try:
-        body = {'values': [data_row]}
-        result = google_sheets_service.spreadsheets().values().append(
-            spreadsheetId=GOOGLE_SHEET_ID,
-            range=f"{SHEET_NAME}!A1",
-            valueInputOption='USER_ENTERED',
-            insertDataOption='INSERT_ROWS',
-            body=body
-        ).execute()
-        return True
-    except Exception as e:
-        print(f"Error appending to Google Sheet: {e}")
-        return False
+# ... (append_to_google_sheet and on_message remain the same)
+# ... (Make sure the on_message function correctly calls analyze_image_with_openai)
+# ... (and the final __main__ block also remains the same)
 
+# --- Discord Bot Event Handler for Messages ---
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
@@ -358,7 +347,7 @@ async def on_message(message):
                         model = item_info.get('model', 'N/A')
                         serial = item_info.get('serial_number', 'N/A')
                         part_no = item_info.get('part_number', 'N/A')
-                        mac = item_info.get('mac_address', 'N/A') # This will be the formatted MAC
+                        mac = item_info.get('mac_address', 'N/A')
                         
                         sheet_row = [formatted_sast_timestamp, discord_user, client_name, make, model, serial, part_no, mac, image_url]
 
@@ -370,7 +359,7 @@ async def on_message(message):
                                 f"**Model:** `{model}`\n"
                                 f"**Serial:** `{serial}`\n"
                                 f"**Part No.:** `{part_no}`\n"
-                                f"**MAC Address:** `{mac}`" # Display formatted MAC
+                                f"**MAC Address:** `{mac}`"
                             )
                         else:
                             summary_parts.append(
