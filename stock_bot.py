@@ -104,7 +104,7 @@ async def download_image(url):
 
 async def analyze_image_with_openai(image_bytes, client_name):
     if not image_bytes:
-        return None # Return None if no image bytes
+        return None 
 
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
     
@@ -116,18 +116,14 @@ async def analyze_image_with_openai(image_bytes, client_name):
         f"The client associated with these items is '{client_name}'.\n\n"
         "Format your response as a single JSON ARRAY, where each element in the array is a JSON object representing one detected item. "
         "Each JSON object should have the keys: 'make', 'model', 'serial_number', 'part_number', 'dp_n', 'vpn', 'mac_address'.\n\n"
-        "CRITICAL INFERENCE STEP FOR MAKE AND MODEL (for each item):\n"
-        "1. If 'Make' and 'Model' are clearly printed on the item body or label, use those values directly for that item.\n"
-        "2. If Make/Model are not directly printed for an item, examine its available part numbers or product numbers:\n"
-        "   - If a 'DP/N' (Dell Part Number) is found for an item, its 'Make' is definitively 'Dell'. Use the 'DP/N' or an associated 'VPN' to determine its 'Model'.\n"
-        "   - If a 'VPN' (Vendor Product Number) is found for an item, this often directly identifies its 'Model' or a product family. Infer its 'Make' if not obvious, possibly using MAC OUI or other clues.\n"
-        "   - A generic 'P/N' or 'Part Number' should be used with other clues to help infer Make/Model for that item.\n"
-        "3. Use the Organizational Unique Identifier (OUI) from the MAC address (if available for an item) to help confirm or identify its manufacturer ('Make').\n"
-        "   For example, an item with MAC '00:0B:82:XX:XX:XX' (OUI '000B82') is likely from Grandstream Networks. An item with VPN 'KM5221WBKB-INT' and DP/N '016PD3' has Make 'Dell' and Model likely 'KM5221W'.\n\n"
+        "INSTRUCTIONS FOR INFERRING 'MAKE' AND 'MODEL' FOR EACH ITEM (if not directly printed):\n"
+        "1. Examine all extracted text from the item's label, paying close attention to any text explicitly labeled as 'Make', 'Model', 'P/N', 'DP/N' (often indicates Dell), 'VPN', 'S/N', and the MAC Address.\n"
+        "2. For 'Make': Prioritize explicit 'Make' labels if present. If not, consider if any part number prefixes (like 'DP/N' often indicating Dell) or the MAC address OUI (Organizationally Unique Identifier from the first 3 octets of the MAC address, e.g., '44:DD:2C' for Yealink or '00:0B:82' for Grandstream) strongly indicate a specific manufacturer.\n"
+        "3. For 'Model': Use explicit 'Model' labels first. If not available, consider if the 'VPN', 'DP/N', or a generic 'P/N' provides a model identifier, especially when combined with an inferred or known 'Make'. Common model prefixes like 'SIP-' or specific patterns like 'W73H', 'KM5221W', 'GXP2130' are also good indicators.\n"
+        "4. If after considering these clues, 'Make' or 'Model' for an item cannot be reasonably determined, use 'N/A' for that item's 'make' or 'model' field.\n\n"
         "If an image clearly shows multiple distinct items (e.g., two separate boxes with different serial numbers), create a separate JSON object for each in the array. "
         "If an item is only partially visible or some details are obscured, extract what you can and use 'N/A' for missing fields for that item. "
-        "If any piece of information cannot be found or reliably inferred for an item, use the string 'N/A' as its value for that specific key in its JSON object. "
-        "Ensure all requested keys are present in each JSON object within the array. "
+        "Ensure all requested keys ('make', 'model', 'serial_number', 'part_number', 'dp_n', 'vpn', 'mac_address') are present in each JSON object within the array, using 'N/A' where appropriate. "
         "Do not add any explanatory text outside of the main JSON array structure."
     )
 
@@ -147,17 +143,15 @@ async def analyze_image_with_openai(image_bytes, client_name):
                     ]
                 }
             ],
-            max_tokens=1024, # Increased for potentially multiple items and more complex JSON
+            max_tokens=1024, 
             temperature=0.1 
         )
         content = response.choices[0].message.content
         print(f"OpenAI Raw Response: {content}")
 
-        processed_items_list = [] # To store successfully processed item dicts
+        processed_items_list = [] 
 
         try:
-            # The response should be a JSON array string.
-            # Find the start and end of the array.
             array_start = content.find('[')
             array_end = content.rfind(']') + 1
             
@@ -167,69 +161,70 @@ async def analyze_image_with_openai(image_bytes, client_name):
 
                 if not isinstance(list_of_item_data, list):
                     print(f"Warning: OpenAI did not return a list as expected. Content: {content}")
-                    # Handle as a single item if it's a dict, or error out
                     if isinstance(list_of_item_data, dict):
-                        list_of_item_data = [list_of_item_data] # Treat as a list with one item
+                        list_of_item_data = [list_of_item_data] 
                     else:
-                        # This will be caught by the outer exception handler if parsing fails
                         raise TypeError("Expected a list of items from OpenAI but received other type.")
             else:
                 print(f"Warning: Could not find JSON array in response. Content: {content}")
-                # Try to parse as a single object if no array brackets are found, for backward compatibility or error cases
                 json_start_obj = content.find('{')
                 json_end_obj = content.rfind('}') + 1
                 if json_start_obj != -1 and json_end_obj != -1:
                     json_obj_str = content[json_start_obj:json_end_obj]
                     single_item_data = json.loads(json_obj_str)
-                    list_of_item_data = [single_item_data] # Treat as a list with one item
+                    list_of_item_data = [single_item_data] 
                     print("Interpreted as a single item object.")
                 else:
-                    # This will be caught by the outer exception handler if parsing fails
                     raise json.JSONDecodeError("No JSON array or object found", content, 0)
 
-
             for item_data in list_of_item_data:
-                raw_extracted_make = item_data.get("make", "N/A")
-                raw_extracted_model = item_data.get("model", "N/A")
+                # Get all fields as extracted by OpenAI
+                item_make = item_data.get("make", "N/A")
+                item_model = item_data.get("model", "N/A")
                 serial_number = item_data.get("serial_number", "N/A")
-                part_number = item_data.get("part_number", "N/A")
-                dp_n = item_data.get("dp_n", "N/A")
-                vpn = item_data.get("vpn", "N/A")
+                part_number = item_data.get("part_number", "N/A") # Generic P/N
+                dp_n = item_data.get("dp_n", "N/A")             # Dell P/N, requested from OpenAI
+                vpn = item_data.get("vpn", "N/A")               # Vendor Product Number, requested from OpenAI
                 mac_address = item_data.get("mac_address", "N/A")
 
-                final_make = raw_extracted_make
-                final_model = raw_extracted_model
-                
-                if (final_make == "N/A" or not final_make) and (dp_n != "N/A" and dp_n):
+                # Python-level refinement/fallback if OpenAI didn't fully infer
+                # This part acts as a safety net if the prompt wasn't enough for OpenAI to fill 'make'/'model'
+                final_make = item_make
+                final_model = item_model
+
+                # If OpenAI didn't set 'make' but gave a DP/N, we know it's Dell
+                if (final_make == "N/A" or not final_make or final_make.lower() == "unknown") and \
+                   (dp_n != "N/A" and dp_n):
                     final_make = "Dell"
-                    print(f"Item (S/N: {serial_number}): Inferred Make 'Dell' from DP/N: {dp_n}")
+                    print(f"Item (S/N: {serial_number}): Python fallback - Inferred Make 'Dell' from DP/N: {dp_n}")
                 
-                if (final_model == "N/A" or not final_model):
+                # If OpenAI didn't set 'model' but gave a VPN, VPN is a good candidate
+                if (final_model == "N/A" or not final_model or final_model.lower() == "unknown"):
                     if vpn != "N/A" and vpn:
                         final_model = vpn 
-                        print(f"Item (S/N: {serial_number}): Using VPN as Model: {vpn}")
+                        print(f"Item (S/N: {serial_number}): Python fallback - Using VPN as Model: {vpn}")
+                    # If it's now known as Dell and model is still unknown, DP/N can be model
                     elif final_make == "Dell" and (dp_n != "N/A" and dp_n):
                         final_model = dp_n 
-                        print(f"Item (S/N: {serial_number}): Using DP/N as Model for Dell device: {dp_n}")
-
+                        print(f"Item (S/N: {serial_number}): Python fallback - Using DP/N as Model for Dell device: {dp_n}")
+                
                 item_info = {
-                    "make": final_make if final_make and final_make != "N/A" else "N/A",
-                    "model": final_model if final_model and final_model != "N/A" else "N/A",
+                    "make": final_make if final_make and final_make.lower() != "n/a" and final_make.lower() != "unknown" else "N/A",
+                    "model": final_model if final_model and final_model.lower() != "n/a" and final_model.lower() != "unknown" else "N/A",
                     "serial_number": serial_number,
-                    "part_number": part_number,
+                    "part_number": part_number, # This is the generic part_number OpenAI was asked for
                     "mac_address": mac_address
                 }
                 processed_items_list.append(item_info)
             
-            if not processed_items_list and content: # If list is empty but we got content
+            if not processed_items_list and content:
                  return [{"make": "N/A (Parsing Issue)", "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A", "raw_response": content[:500]}]
-
 
             return processed_items_list
 
         except json.JSONDecodeError as e:
             print(f"Error: OpenAI did not return valid JSON array. Content: {content}. Error: {e}")
-            return [{"make": "N/A (JSON Array Error)", "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A", "raw_response": content[:500]}] # Return list with error dict
+            return [{"make": "N/A (JSON Array Error)", "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A", "raw_response": content[:500]}]
         except Exception as e: 
             print(f"An unexpected error occurred parsing OpenAI response: {e}")
             return [{"make": "N/A (Parsing Error)", "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A", "raw_response": str(e)[:500]}]
@@ -237,7 +232,7 @@ async def analyze_image_with_openai(image_bytes, client_name):
     except openai.APIError as e: 
         print(f"OpenAI API Error: {e}")
         error_message = f"OpenAI API Error: Status {e.status_code} - {e.message}"
-        return [{"make": error_message, "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A"}] # Return list with error dict
+        return [{"make": error_message, "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A"}]
     except Exception as e: 
         print(f"Error calling OpenAI API: {e}")
         return [{"make": f"N/A (API Call Error: {str(e)[:100]})", "model": "N/A", "serial_number": "N/A", "part_number": "N/A", "mac_address": "N/A"}]
@@ -253,7 +248,6 @@ def append_to_google_sheet(data_row):
             insertDataOption='INSERT_ROWS',
             body=body
         ).execute()
-        # print(f"Appended to Google Sheet: {result.get('updates', {}).get('updatedCells', 0)} cells.")
         return True
     except Exception as e:
         print(f"Error appending to Google Sheet: {e}")
@@ -293,7 +287,6 @@ async def on_message(message):
                     await message.add_reaction("⚠️")
                     return
 
-                # analyze_image_with_openai now returns a list of item dictionaries or None/error list
                 list_of_extracted_items = await analyze_image_with_openai(image_bytes, client_name)
 
                 if list_of_extracted_items: 
@@ -301,15 +294,14 @@ async def on_message(message):
                     summary_parts = [f"**Client:** {client_name}"]
                     
                     for item_info in list_of_extracted_items:
-                        # Check for raw_response key which indicates an error or parsing issue for an item
                         if "raw_response" in item_info and ("Error" in item_info.get("make", "") or "Issue" in item_info.get("make", "")):
-                            make = item_info.get('make', 'Error Processing Item')
+                            make_val = item_info.get('make', 'Error Processing Item') 
                             summary_parts.append(
                                 f"------------------------------------\n"
-                                f"⚠️ **Item Processing Issue:** `{make}`\n"
+                                f"⚠️ **Item Processing Issue:** `{make_val}`\n"
                                 f"Raw Data Snippet: ```{str(item_info.get('raw_response','N/A'))[:200]}```"
                             )
-                            continue # Skip appending this item to sheet if it's an error entry
+                            continue
 
                         make = item_info.get('make', 'N/A')
                         model = item_info.get('model', 'N/A')
@@ -317,10 +309,6 @@ async def on_message(message):
                         part_no = item_info.get('part_number', 'N/A')
                         mac = item_info.get('mac_address', 'N/A')
                         
-                        # Ensure a serial number is present to create a distinct entry, or handle items without serials if needed.
-                        # For now, we assume each distinct item object from OpenAI is worth a row.
-                        # If serial is N/A for an item, it will still be logged.
-
                         sheet_row = [formatted_sast_timestamp, discord_user, client_name, make, model, serial, part_no, mac, image_url]
 
                         if await asyncio.to_thread(append_to_google_sheet, sheet_row):
@@ -342,22 +330,21 @@ async def on_message(message):
                     if successful_saves > 0:
                         summary_parts.append(f"------------------------------------\n{successful_saves} item(s) processed and data saved.")
                         await message.add_reaction("✅")
-                    else: # No items were successfully saved, but some might have been attempted.
+                    else:
                         if any("Item Processing Issue" in part for part in summary_parts) or any("Failed to save item" in part for part in summary_parts):
                              summary_parts.append(f"------------------------------------\nNo items successfully saved. Please check issues above.")
-                        else: # This case means list_of_extracted_items might have been empty or only contained errors not caught above.
+                        else:
                             summary_parts.append(f"------------------------------------\nNo valid item data extracted or saved.")
                         await message.add_reaction("❌")
                     
                     summary_parts.append(f"(Time: {sast_timestamp.strftime('%Y-%m-%d %H:%M:%S %Z%z')})")
                     full_summary_message = "\n".join(summary_parts)
                     
-                    # Discord message length limit is 2000 characters. Truncate if necessary.
                     if len(full_summary_message) > 1990:
                         full_summary_message = full_summary_message[:1990] + "\n... (message truncated)"
                     await processing_msg.edit(content=full_summary_message)
 
-                else: # list_of_extracted_items is None or empty from the start (critical API failure)
+                else:
                     await processing_msg.edit(content="❌ Could not extract any information from the image. A critical error likely occurred during analysis.")
                     await message.add_reaction("❓")
 
