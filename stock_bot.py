@@ -22,9 +22,10 @@ dotenv_path = current_dir / ".env"
 
 print(f"Attempting to load .env file from: {dotenv_path}") # For debugging
 
+# (At the top of your script)
 if dotenv_path.exists():
-    load_dotenv(dotenv_path=dotenv_path)
-    print(f".env file loaded successfully from {dotenv_path}")
+    load_dotenv(dotenv_path=dotenv_path, override=True) # ADD override=True
+    print(f".env file loaded successfully from {dotenv_path} (overriding existing env vars if any)")
 else:
     print(f"Warning: .env file not found at {dotenv_path}. Environment variables might not be set correctly.")
 
