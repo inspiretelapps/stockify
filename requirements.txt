@@ -1,0 +1,26 @@
+# requirements.txt
+
+# For the Discord bot functionality
+discord.py>=2.0.0
+
+# For interacting with the OpenAI API
+openai>=1.0.0
+
+# For interacting with Google Sheets API
+google-api-python-client>=2.0.0
+google-auth-httplib2>=0.1.0
+google-auth-oauthlib>=0.7.0
+
+# For loading environment variables from .env file
+python-dotenv>=0.19.0
+
+# For making HTTP requests (e.g., downloading images, calling MACVendors API)
+requests>=2.25.0
+
+# For timezone handling (SAST conversion)
+pytz>=2021.3
+
+# Pillow is often a dependency for image handling by other libraries or useful for future image manipulation
+# Though not directly used in the final script's logic, it's good to have if image bytes are handled.
+# If you find it's not strictly needed by any indirect dependencies, you can omit it.
+Pillow>=8.4.0
