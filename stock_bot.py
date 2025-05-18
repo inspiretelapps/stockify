@@ -12,9 +12,24 @@ import io
 import base64
 import json
 import pytz
+import pathlib # Import the pathlib module
 
 # --- Load Environment Variables ---
-load_dotenv()
+# Determine the absolute path to the directory where stock_bot.py is located
+current_dir = pathlib.Path(__file__).parent.resolve()
+# Construct the path to the .env file within this script's directory
+dotenv_path = current_dir / ".env" 
+
+print(f"Attempting to load .env file from: {dotenv_path}") # For debugging
+
+if dotenv_path.exists():
+    load_dotenv(dotenv_path=dotenv_path)
+    print(f".env file loaded successfully from {dotenv_path}")
+else:
+    print(f"Warning: .env file not found at {dotenv_path}. Environment variables might not be set correctly.")
+
+
+# --- Load Environment Variables ---
 DISCORD_BOT_TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 GOOGLE_SHEET_ID = os.getenv('GOOGLE_SHEET_ID')
@@ -379,7 +394,7 @@ async def on_message(message):
                 formatted_sast_timestamp = sast_timestamp.strftime("%Y-%m-%d %H:%M:%S SAST")
                 image_url = attachment.url
 
-                processing_msg = await message.reply(f"⏳ Processing image for client: **{client_name}** (posted by {discord_user}). This may take a moment for multiple items...")
+                processing_msg = await message.reply(f"⏳ Processing image for client: **{client_name}** (posted by {discord_user}). ")
 
                 image_bytes = await download_image(image_url)
                 if not image_bytes:
