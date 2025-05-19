@@ -68,7 +68,7 @@ except Exception as e:
     print(f"Error building Google Sheets service: {e}")
     exit()
 
-SHEET_NAME = 'Sheet1'
+SHEET_NAME = 'Stockify'
 EXPECTED_HEADER = ["Timestamp", "Discord User", "Client Name", "Make", "Model", "Serial Number", "Part Number", "MAC Address", "Image URL"]
 
 # --- Helper Function for MAC Formatting ---
